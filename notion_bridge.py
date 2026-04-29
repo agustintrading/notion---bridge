@@ -209,7 +209,7 @@ def build_notion_properties(trade, target_label, db_id):
     return props
 
 
-def build_page_content(trade, screenshot_url):
+def build_page_content(trade, screenshot_url, screenshot2_url=None):
     blocks = []
     info_parts = []
     info_parts.append(f"Trade #{trade.get('num','?')}")
@@ -227,14 +227,30 @@ def build_page_content(trade, screenshot_url):
         }
     })
 
+    # Screenshot 1: zoom area trade
     if screenshot_url:
         blocks.append({
             "object": "block",
+            "type": "heading_3",
+            "heading_3": {"rich_text": [{"text": {"content": "📍 Zoom area trade"}}]}
+        })
+        blocks.append({
+            "object": "block",
             "type": "image",
-            "image": {
-                "type": "external",
-                "external": {"url": screenshot_url}
-            }
+            "image": {"type": "external", "external": {"url": screenshot_url}}
+        })
+
+    # Screenshot 2: contesto giornata Asia → 21:00
+    if screenshot2_url:
+        blocks.append({
+            "object": "block",
+            "type": "heading_3",
+            "heading_3": {"rich_text": [{"text": {"content": "🌍 Vista contesto (Asia → 21:00)"}}]}
+        })
+        blocks.append({
+            "object": "block",
+            "type": "image",
+            "image": {"type": "external", "external": {"url": screenshot2_url}}
         })
 
     return blocks
@@ -249,8 +265,8 @@ def index():
     return jsonify({
         "ok": True,
         "service": "Notion Bridge",
-        "version": "1.0",
-        "endpoints": ["/sync", "/health"]
+        "version": "2.0",
+        "endpoints": ["/sync", "/update", "/delete", "/health"]
     })
 
 
@@ -260,6 +276,7 @@ def sync():
         payload = request.get_json(force=True)
         trade = payload.get("trade") or {}
         screenshot = payload.get("screenshot")
+        screenshot2 = payload.get("screenshot2")  # F8b: secondo screenshot contesto
 
         if not trade.get("id"):
             return jsonify({"ok": False, "error": "Missing trade.id"}), 400
@@ -268,17 +285,24 @@ def sync():
         if db_id is None:
             return jsonify({"ok": False, "error": f"Trade non sincronizzabile (result={trade.get('result')})"}), 400
 
+        # Upload screenshots
         screenshot_url = None
+        screenshot2_url = None
         if screenshot:
             try:
-                public_id = f"trade_{trade.get('id')}_{int(time.time())}"
+                public_id = f"trade_{trade.get('id')}_zoom_{int(time.time())}"
                 screenshot_url = upload_to_cloudinary(screenshot, public_id)
-                print(f"[sync] Screenshot uploaded: {screenshot_url}")
             except Exception as e:
-                print(f"[sync] WARN screenshot upload fallito: {e}")
+                print(f"[sync] WARN screenshot1 fallito: {e}")
+        if screenshot2:
+            try:
+                public_id = f"trade_{trade.get('id')}_ctx_{int(time.time())}"
+                screenshot2_url = upload_to_cloudinary(screenshot2, public_id)
+            except Exception as e:
+                print(f"[sync] WARN screenshot2 fallito: {e}")
 
         props = build_notion_properties(trade, target_label, db_id)
-        children = build_page_content(trade, screenshot_url)
+        children = build_page_content(trade, screenshot_url, screenshot2_url)
 
         body = {
             "parent": {"database_id": db_id},
@@ -296,11 +320,110 @@ def sync():
             "page_url": page_url,
             "target": target_label,
             "screenshot_url": screenshot_url,
+            "screenshot2_url": screenshot2_url,
         })
 
     except Exception as e:
         print(f"[sync] ERROR: {e}")
         import traceback; traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/update", methods=["POST"])
+def update():
+    """Aggiorna una pagina Notion esistente (properties + screenshots)."""
+    try:
+        payload = request.get_json(force=True)
+        trade = payload.get("trade") or {}
+        page_id = payload.get("page_id")
+        screenshot = payload.get("screenshot")
+        screenshot2 = payload.get("screenshot2")
+
+        if not page_id:
+            return jsonify({"ok": False, "error": "Missing page_id"}), 400
+        if not trade.get("id"):
+            return jsonify({"ok": False, "error": "Missing trade.id"}), 400
+
+        db_id, target_label = determine_target_db(trade)
+        if db_id is None:
+            return jsonify({"ok": False, "error": f"Trade non sincronizzabile (result={trade.get('result')})"}), 400
+
+        # Upload nuovi screenshot
+        screenshot_url = None
+        screenshot2_url = None
+        if screenshot:
+            try:
+                public_id = f"trade_{trade.get('id')}_zoom_{int(time.time())}"
+                screenshot_url = upload_to_cloudinary(screenshot, public_id)
+            except Exception as e:
+                print(f"[update] WARN screenshot1: {e}")
+        if screenshot2:
+            try:
+                public_id = f"trade_{trade.get('id')}_ctx_{int(time.time())}"
+                screenshot2_url = upload_to_cloudinary(screenshot2, public_id)
+            except Exception as e:
+                print(f"[update] WARN screenshot2: {e}")
+
+        props = build_notion_properties(trade, target_label, db_id)
+
+        # 1. PATCH properties della pagina
+        notion_request("PATCH", f"https://api.notion.com/v1/pages/{page_id}", {
+            "properties": props
+        })
+
+        # 2. Cancella tutti i children esistenti e aggiungi nuovi
+        try:
+            existing_children = notion_request("GET", f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=50")
+            for block in existing_children.get("results", []):
+                bid = block.get("id")
+                if bid:
+                    try:
+                        notion_request("DELETE", f"https://api.notion.com/v1/blocks/{bid}")
+                    except Exception as e:
+                        print(f"[update] WARN delete block {bid}: {e}")
+        except Exception as e:
+            print(f"[update] WARN list children: {e}")
+
+        # 3. Aggiungi i nuovi children
+        new_children = build_page_content(trade, screenshot_url, screenshot2_url)
+        if new_children:
+            notion_request("PATCH", f"https://api.notion.com/v1/blocks/{page_id}/children", {
+                "children": new_children
+            })
+
+        page_url = f"https://www.notion.so/{page_id.replace('-','')}"
+        print(f"[update] OK trade #{trade.get('num')} → {target_label} → {page_url}")
+
+        return jsonify({
+            "ok": True,
+            "page_id": page_id,
+            "page_url": page_url,
+            "target": target_label,
+            "screenshot_url": screenshot_url,
+            "screenshot2_url": screenshot2_url,
+        })
+
+    except Exception as e:
+        print(f"[update] ERROR: {e}")
+        import traceback; traceback.print_exc()
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/delete", methods=["POST"])
+def delete():
+    """Archivia una pagina Notion (cancellazione soft)."""
+    try:
+        payload = request.get_json(force=True)
+        page_id = payload.get("page_id")
+        if not page_id:
+            return jsonify({"ok": False, "error": "Missing page_id"}), 400
+        notion_request("PATCH", f"https://api.notion.com/v1/pages/{page_id}", {
+            "archived": True
+        })
+        print(f"[delete] OK page {page_id} archiviata")
+        return jsonify({"ok": True, "page_id": page_id, "archived": True})
+    except Exception as e:
+        print(f"[delete] ERROR: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
