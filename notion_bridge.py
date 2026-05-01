@@ -265,7 +265,7 @@ def index():
     return jsonify({
         "ok": True,
         "service": "Notion Bridge",
-        "version": "2.1",
+        "version": "2.2",
         "endpoints": ["/sync", "/update", "/delete", "/report", "/health"]
     })
 
@@ -437,10 +437,12 @@ def create_report():
         blocks = payload.get('blocks', [])
         equity_real_b64 = payload.get('equity_real')
         equity_strat_b64 = payload.get('equity_strategy')
+        report_preview_b64 = payload.get('report_preview')  # F19 v2.2: nuovo
 
-        # Upload immagini equity su Cloudinary
+        # Upload immagini Cloudinary
         url_real = None
         url_strat = None
+        url_preview = None
         ts = int(time.time())
         if equity_real_b64:
             try:
@@ -452,6 +454,11 @@ def create_report():
                 url_strat = upload_to_cloudinary(equity_strat_b64, f"report_strat_{ts}")
             except Exception as e:
                 print(f"[report] WARN equity_strat: {e}")
+        if report_preview_b64:
+            try:
+                url_preview = upload_to_cloudinary(report_preview_b64, f"report_preview_{ts}")
+            except Exception as e:
+                print(f"[report] WARN preview: {e}")
 
         # Sostituisci placeholder nei blocchi
         for blk in blocks:
@@ -461,6 +468,8 @@ def create_report():
                     blk['image'] = {'type': 'external', 'external': {'url': url_real}}
                 elif ph == 'EQUITY_STRATEGY' and url_strat:
                     blk['image'] = {'type': 'external', 'external': {'url': url_strat}}
+                elif ph == 'REPORT_PREVIEW' and url_preview:
+                    blk['image'] = {'type': 'external', 'external': {'url': url_preview}}
                 else:
                     blk['type'] = 'paragraph'
                     blk['paragraph'] = {'rich_text': [{'text': {'content': '[immagine non disponibile]'}}]}
