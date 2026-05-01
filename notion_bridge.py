@@ -265,8 +265,8 @@ def index():
     return jsonify({
         "ok": True,
         "service": "Notion Bridge",
-        "version": "2.0",
-        "endpoints": ["/sync", "/update", "/delete", "/health"]
+        "version": "2.1",
+        "endpoints": ["/sync", "/update", "/delete", "/report", "/health"]
     })
 
 
@@ -424,6 +424,73 @@ def delete():
         return jsonify({"ok": True, "page_id": page_id, "archived": True})
     except Exception as e:
         print(f"[delete] ERROR: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/report", methods=["POST"])
+def create_report():
+    """Crea pagina report mensile sul DB WIN+LOSS."""
+    try:
+        payload = request.get_json(force=True)
+        title = payload.get('title', 'Report Mensile')
+        date_iso = payload.get('date')
+        blocks = payload.get('blocks', [])
+        equity_real_b64 = payload.get('equity_real')
+        equity_strat_b64 = payload.get('equity_strategy')
+
+        # Upload immagini equity su Cloudinary
+        url_real = None
+        url_strat = None
+        ts = int(time.time())
+        if equity_real_b64:
+            try:
+                url_real = upload_to_cloudinary(equity_real_b64, f"report_real_{ts}")
+            except Exception as e:
+                print(f"[report] WARN equity_real: {e}")
+        if equity_strat_b64:
+            try:
+                url_strat = upload_to_cloudinary(equity_strat_b64, f"report_strat_{ts}")
+            except Exception as e:
+                print(f"[report] WARN equity_strat: {e}")
+
+        # Sostituisci placeholder nei blocchi
+        for blk in blocks:
+            if blk.get('type') == 'image' and 'placeholder' in blk.get('image', {}):
+                ph = blk['image']['placeholder']
+                if ph == 'EQUITY_REAL' and url_real:
+                    blk['image'] = {'type': 'external', 'external': {'url': url_real}}
+                elif ph == 'EQUITY_STRATEGY' and url_strat:
+                    blk['image'] = {'type': 'external', 'external': {'url': url_strat}}
+                else:
+                    blk['type'] = 'paragraph'
+                    blk['paragraph'] = {'rich_text': [{'text': {'content': '[immagine non disponibile]'}}]}
+                    del blk['image']
+
+        # Crea pagina nel DB
+        body = {
+            "parent": {"database_id": DB_WIN_LOSS},
+            "icon": {"type": "emoji", "emoji": "✏️"},
+            "properties": {
+                "PAIR": {"title": [{"text": {"content": title}}]},
+            },
+            "children": blocks
+        }
+        if date_iso:
+            body["properties"]["DATA"] = {"date": {"start": date_iso}}
+
+        result = notion_request("POST", "https://api.notion.com/v1/pages", body)
+        print(f"[report] OK {title} → {result.get('url')}")
+        return jsonify({
+            "ok": True,
+            "page_id": result.get('id'),
+            "page_url": result.get('url'),
+            "equity_real_url": url_real,
+            "equity_strat_url": url_strat,
+        })
+
+    except Exception as e:
+        print(f"[report] ERROR: {e}")
+        import traceback; traceback.print_exc()
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
