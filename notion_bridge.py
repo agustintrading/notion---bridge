@@ -34,6 +34,7 @@ DB_BE        = os.environ.get("DB_BE", "")
 CLOUDINARY_CLOUD  = os.environ.get("CLOUDINARY_CLOUD", "")
 CLOUDINARY_KEY    = os.environ.get("CLOUDINARY_KEY", "")
 CLOUDINARY_SECRET = os.environ.get("CLOUDINARY_SECRET", "")
+print(f"[BOOT] CLOUDINARY_CLOUD={CLOUDINARY_CLOUD!r} KEY={CLOUDINARY_KEY[:4] if CLOUDINARY_KEY else 'MISSING'}... SECRET={'OK' if CLOUDINARY_SECRET else 'MISSING'}")
 
 NOTION_VERSION = "2022-06-28"
 PORT = int(os.environ.get("PORT", 5000))
