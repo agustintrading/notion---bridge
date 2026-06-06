@@ -487,6 +487,15 @@ def create_report():
         }
         if date_iso:
             body["properties"]["DATA"] = {"date": {"start": date_iso}}
+            # v2.3: imposta MESE così il report compare nel gruppo del suo mese (es. "Mag 2026")
+            try:
+                _y = int(date_iso[:4]); _m = int(date_iso[5:7])
+                _MESI = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov","Dic"]
+                _mese = f"{_MESI[_m-1]} {_y}"
+                ensure_select_option(DB_WIN_LOSS, "MESE", _mese)
+                body["properties"]["MESE"] = {"select": {"name": _mese}}
+            except Exception as e:
+                print(f"[report] WARN MESE: {e}")
 
         result = notion_request("POST", "https://api.notion.com/v1/pages", body)
         print(f"[report] OK {title} → {result.get('url')}")
